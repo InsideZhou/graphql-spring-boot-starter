@@ -1,0 +1,11 @@
+/.*/
+.*
+!.gitignore
+
+/build/*
+*/build/*
+/out/*
+*/out/*
+
+*.iml
+gradle-app.setting
