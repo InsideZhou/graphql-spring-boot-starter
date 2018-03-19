@@ -1,4 +1,4 @@
-# [GraphQL](http://graphql.org/) springboot auto configuration
+# [GraphQL](http://graphql.org/) springboot starter
 > Provide a simple config for use of graphql.
 
 ### By default 
