@@ -1,7 +1,8 @@
 package me.insidezhou.graphql.springboot
 
 import graphql.GraphQL
-import graphql.language.FieldDefinition
+import graphql.language.ListType
+import graphql.language.NonNullType
 import graphql.language.ObjectTypeDefinition
 import graphql.language.TypeName
 import graphql.schema.DataFetcher
@@ -11,6 +12,7 @@ import graphql.schema.idl.SchemaParser
 import graphql.schema.idl.TypeDefinitionRegistry
 import org.apache.commons.logging.LogFactory
 import org.springframework.beans.BeansException
+import org.springframework.beans.factory.NoSuchBeanDefinitionException
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.context.properties.ConfigurationProperties
 import org.springframework.context.ApplicationContext
@@ -38,38 +40,70 @@ open class GraphQLAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    open fun runtimeWiring(registry: TypeDefinitionRegistry, applicationContext: ApplicationContext, properties: Properties): RuntimeWiring {
-        val builder = RuntimeWiring.newRuntimeWiring()
+    open fun runtimeWiring(registry: TypeDefinitionRegistry, applicationContext: ApplicationContext, properties: Properties): RuntimeWiring.Builder {
+        val runtimeWiringBuilder = RuntimeWiring.newRuntimeWiring()
 
-        registry.schemaDefinition().get().operationTypeDefinitions.forEach { operationTypeDefinition ->
-            val typeName = operationTypeDefinition.type as TypeName
+        val allTypeDefinitions = registry.types().values
+        val allTypeNames = allTypeDefinitions.map { it.name }
 
-            builder.type(typeName.name, { builder ->
-                val typeDefinition = registry.types().values.find { typeDefinition -> typeDefinition.name == typeName.name } as ObjectTypeDefinition
+        allTypeDefinitions
+            .filter { it is ObjectTypeDefinition }
+            .forEach { typeDefinition ->
+                val typeName = typeDefinition.name.decapitalize()
 
-                typeDefinition.fieldDefinitions.forEach { fieldDefinition: FieldDefinition ->
-                    val fieldName = fieldDefinition.name
-
-                    try {
-                        val dataFetcher = applicationContext.getBean(fieldName + properties.dataFetcherBeanSuffix, DataFetcher::class.java)
-                        builder.dataFetcher(fieldName, dataFetcher)
-                    }
-                    catch (e: BeansException) {
-                        log.warn("Fail on initializing ${fieldName + properties.dataFetcherBeanSuffix}", e)
-                    }
+                try {
+                    val typeBuilder = applicationContext.getBean(typeName + properties.typeBuilderSuffix, TypeRuntimeWiringBuilder::class.java)
+                    runtimeWiringBuilder.type(typeDefinition.name, { typeBuilder.wiring(it) })
                 }
+                catch (e: NoSuchBeanDefinitionException) {
+                    log.warn("${typeName + properties.typeBuilderSuffix} not found, using default.")
 
-                return@type builder
-            })
-        }
+                    runtimeWiringBuilder.type(typeDefinition.name, { typeBuilder ->
+                        (typeDefinition as ObjectTypeDefinition).fieldDefinitions
+                            .forEach { fieldDefinition ->
+                                val fieldType = fieldDefinition.type
 
-        return builder.build()
+                                when (fieldType) {
+                                    is NonNullType -> fieldType.type as TypeName
+                                    is ListType -> fieldType.type as TypeName
+                                    else -> (fieldType as? TypeName)
+                                }?.apply {
+                                    if (!allTypeNames.contains(this.name)) return@apply
+
+                                    val fieldTypeName = when (fieldType) {
+                                        is NonNullType -> "${this.name}NonNull"
+                                        is ListType -> "${this.name}List"
+                                        else -> this.name
+                                    }.decapitalize()
+
+                                    try {
+                                        val dataFetcher = applicationContext.getBean(fieldTypeName + properties.dataFetcherSuffix, DataFetcher::class.java)
+                                        typeBuilder.dataFetcher(fieldDefinition.name, dataFetcher)
+                                    }
+                                    catch (e: NoSuchBeanDefinitionException) {
+                                        log.warn("${fieldTypeName + properties.dataFetcherSuffix} not found")
+                                    }
+                                    catch (e: BeansException) {
+                                        log.error("Fail on initializing ${fieldTypeName + properties.dataFetcherSuffix}", e)
+                                    }
+                                }
+                            }
+
+                        return@type typeBuilder
+                    })
+                }
+                catch (e: BeansException) {
+                    log.error("Fail on initializing ${typeName + properties.typeBuilderSuffix}", e)
+                }
+            }
+
+        return runtimeWiringBuilder
     }
 
     @Bean
     @ConditionalOnMissingBean
-    open fun graphQL(registry: TypeDefinitionRegistry, runtimeWiring: RuntimeWiring): GraphQL {
-        val schema = SchemaGenerator().makeExecutableSchema(registry, runtimeWiring)
+    open fun graphQL(registry: TypeDefinitionRegistry, runtimeWiringBuilder: RuntimeWiring.Builder): GraphQL {
+        val schema = SchemaGenerator().makeExecutableSchema(registry, runtimeWiringBuilder.build())
 
         return GraphQL.newGraphQL(schema).build()
     }
@@ -78,8 +112,13 @@ open class GraphQLAutoConfiguration {
     @ConfigurationProperties("graphql")
     class Properties {
         /**
+         * used to find TypeBuilder bean with suffix
+         */
+        var typeBuilderSuffix = "TypeBuilder"
+
+        /**
          * used to find DataFetcher bean with suffix
          */
-        var dataFetcherBeanSuffix = "DataFetcher"
+        var dataFetcherSuffix = "DataFetcher"
     }
 }
