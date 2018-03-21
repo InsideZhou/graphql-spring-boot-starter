@@ -9,3 +9,38 @@
     - If ListType, *ListDataFetcher used.
     - If NonNullType, *NonNullDataFetcher used.
 1. Wire up definitions and beans.
+
+
+### Example
+```
+schema {
+    query: Query
+}
+
+type Query {
+    login: Login
+    orderList: [Order]
+}
+
+```
+
+```
+data class Order(var code: String)
+data class Login(var cellphone: String)
+
+
+@Component
+class LoginDataFetcher : DataFetcher<Login> {
+    override fun get(environment: DataFetchingEnvironment): Login {
+        return Login("13800138000")
+    }
+}
+
+
+@Component
+class OrderListDataFetcher : DataFetcher<Array<Order>> {
+    override fun get(environment: DataFetchingEnvironment?): Array<Order> {
+        return arrayOf(Order("NN20190101123238781"))
+    }
+}
+```
